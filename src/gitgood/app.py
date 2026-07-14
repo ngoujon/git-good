@@ -28,6 +28,7 @@ def run(repo_path: str | None = None) -> int:
             for tab in window.all_repo_tabs():
                 tab.graph_view.refresh_theme()
                 tab.diff_view.refresh_theme()
+                tab.commit_details_panel.refresh_theme()
 
         style_hints.colorSchemeChanged.connect(refresh_open_tabs)
 

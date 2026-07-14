@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from gitgood import config
 from gitgood.auth import github_auth
 from gitgood.git_ops.graph import CommitGraph, build_commit_graph
 from gitgood.git_ops.repo_state import OpKind, get_repo_state
@@ -20,7 +21,8 @@ from gitgood.git_ops.repository import ConflictInfo, StashEntry, StatusResult
 from gitgood.ui.dialogs.branch_dialog import BranchDialog
 from gitgood.ui.widgets.changes_panel import ChangesPanel
 from gitgood.ui.widgets.commit_box import CommitBox
-from gitgood.ui.widgets.commit_graph_view import CommitGraphView
+from gitgood.ui.widgets.commit_details_panel import CommitDetailsPanel
+from gitgood.ui.widgets.commit_graph_view import CommitGraphView, GraphColumnHeader
 from gitgood.ui.widgets.conflict_resolver import ConflictResolverDialog
 from gitgood.ui.widgets.diff_view import SideBySideDiffView
 from gitgood.ui.widgets.stash_panel import StashPanel
@@ -58,6 +60,7 @@ class RepoTab(QWidget):
         super().__init__()
         self.repo_path = repo_path
         self._conflict_dialog: ConflictResolverDialog | None = None
+        self._selected_commit_sha: str | None = None
 
         self.worker: RepoWorker
         self.thread = None
@@ -81,6 +84,13 @@ class RepoTab(QWidget):
         left_layout.addLayout(search_row)
         self.graph_view = CommitGraphView()
         self.graph_view.commit_selected.connect(self._on_commit_selected)
+        settings = config.load_settings()
+        self.graph_view.set_show_author(settings.get("graph_show_author", True))
+        self.graph_view.set_show_date(settings.get("graph_show_date", True))
+        self.graph_header = GraphColumnHeader(self.graph_view)
+        self.graph_header.author_action.toggled.connect(self._on_graph_show_author_toggled)
+        self.graph_header.date_action.toggled.connect(self._on_graph_show_date_toggled)
+        left_layout.addWidget(self.graph_header)
         left_layout.addWidget(self.graph_view)
         main_splitter.addWidget(left_container)
 
@@ -102,6 +112,9 @@ class RepoTab(QWidget):
         self.side_tabs = QTabWidget()
         self.diff_view = SideBySideDiffView()
         self.side_tabs.addTab(self.diff_view, "Diff")
+        self.commit_details_panel = CommitDetailsPanel()
+        self.commit_details_panel.file_selected.connect(self._on_commit_file_selected)
+        self.side_tabs.addTab(self.commit_details_panel, "Commit")
         self.stash_panel = StashPanel()
         self.stash_panel.save_requested.connect(self._on_stash_save_requested)
         self.stash_panel.apply_requested.connect(self._on_stash_apply_requested)
@@ -270,6 +283,36 @@ class RepoTab(QWidget):
 
     def _on_commit_selected(self, sha: str) -> None:
         self.status_message.emit(f"Selected {sha[:7]}")
+        self._selected_commit_sha = sha
+        node = self.graph_view.get_node(sha)
+        summary = node.summary if node else ""
+
+        def job(repo, progress_cb):
+            return {"kind": "commit_files", "sha": sha, "summary": summary, "files": repo.commit_changed_files(sha)}
+
+        self.worker.submit(job)
+        self.side_tabs.setCurrentWidget(self.commit_details_panel)
+
+    def _on_commit_file_selected(self, path: str) -> None:
+        sha = self._selected_commit_sha
+        if not sha:
+            return
+
+        def job(repo, progress_cb):
+            old, new = repo.commit_file_diff_sources(sha, path)
+            return {"kind": "commit_diff", "old": old, "new": new}
+
+        self.worker.submit(job)
+
+    def _on_graph_show_author_toggled(self, checked: bool) -> None:
+        settings = config.load_settings()
+        settings["graph_show_author"] = checked
+        config.save_settings(settings)
+
+    def _on_graph_show_date_toggled(self, checked: bool) -> None:
+        settings = config.load_settings()
+        settings["graph_show_date"] = checked
+        config.save_settings(settings)
 
     # ---- changes panel actions --------------------------------------------------------
 
@@ -406,6 +449,10 @@ class RepoTab(QWidget):
             self.stash_panel.set_stashes(result)
         elif isinstance(result, dict) and result.get("kind") == "diff":
             self.diff_view.set_diff(result["old"], result["new"])
+        elif isinstance(result, dict) and result.get("kind") == "commit_files":
+            self.commit_details_panel.set_commit(result["sha"], result["summary"], result["files"])
+        elif isinstance(result, dict) and result.get("kind") == "commit_diff":
+            self.commit_details_panel.diff_view.set_diff(result["old"], result["new"])
         elif isinstance(result, dict) and result.get("kind") == "stash_bundle":
             self._apply_status(result["status"])
             self.stash_panel.set_stashes(result["stashes"])

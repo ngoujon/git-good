@@ -192,3 +192,30 @@ def test_side_by_side_diff_sources_untracked_file(scratch_repo):
     old, new = r.side_by_side_diff_sources("new.txt", staged=False)
     assert old == ""
     assert new == "brand new\n"
+
+
+def test_commit_changed_files_root_commit(scratch_repo):
+    r = Repository(scratch_repo)
+    sha = r.repo.head.commit.hexsha
+
+    files = r.commit_changed_files(sha)
+    assert {c.path for c in files} == {"a.txt"}
+
+
+def test_commit_changed_files_and_diff_sources_second_commit(scratch_repo):
+    r = Repository(scratch_repo)
+    (Path(scratch_repo) / "a.txt").write_text("changed\n")
+    (Path(scratch_repo) / "b.txt").write_text("new\n")
+    r.stage(["a.txt", "b.txt"])
+    sha = r.commit("second commit")
+
+    files = r.commit_changed_files(sha)
+    assert {c.path for c in files} == {"a.txt", "b.txt"}
+
+    old, new = r.commit_file_diff_sources(sha, "a.txt")
+    assert old == "hello"
+    assert new == "changed"
+
+    old, new = r.commit_file_diff_sources(sha, "b.txt")
+    assert old == ""
+    assert new == "new"

@@ -78,6 +78,15 @@ def _blob_text(blob: git.Blob | None) -> str | None:
         return None
 
 
+def _show_at(repo: git.Repo, ref: str, path: str) -> str:
+    """`git show <ref>:<path>`, or "" if the file didn't exist at that ref
+    (e.g. it was added later, or deleted at that point in history)."""
+    try:
+        return repo.git.show(f"{ref}:{path}")
+    except GitCommandError:
+        return ""
+
+
 class Repository:
     def __init__(self, path: str | Path):
         self.repo = git.Repo(path)
@@ -369,6 +378,24 @@ class Repository:
         # `git add` (not IndexFile.add) is what actually clears the stage 1/2/3
         # conflict entries -- GitPython's in-memory add() can leave them behind.
         self.repo.git.add(path)
+
+    def commit_changed_files(self, sha: str) -> list[ChangeEntry]:
+        """Files changed by a single historical commit, diffed against its
+        first parent (or against the empty tree for a root commit)."""
+        commit = self.repo.commit(sha)
+        parent = commit.parents[0] if commit.parents else None
+        diffs = parent.diff(commit) if parent is not None else commit.diff(git.NULL_TREE)
+        return [ChangeEntry(d.a_path or d.b_path, d.change_type or "M") for d in diffs]
+
+    def commit_file_diff_sources(self, sha: str, path: str) -> tuple[str, str]:
+        """Returns (old_text, new_text) for one file as of a historical
+        commit vs. its first parent -- the history counterpart of
+        side_by_side_diff_sources()."""
+        commit = self.repo.commit(sha)
+        parent = commit.parents[0] if commit.parents else None
+        new_text = _show_at(self.repo, sha, path)
+        old_text = _show_at(self.repo, parent.hexsha, path) if parent is not None else ""
+        return old_text, new_text
 
     def cherry_pick(self, sha: str) -> None:
         try:
